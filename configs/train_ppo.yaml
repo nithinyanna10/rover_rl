@@ -1,16 +1,21 @@
 train:
-  total_timesteps: 500000
-  n_envs: 4
+  total_timesteps: 5000000   # 5M steps for higher success on hard maps
+  n_envs: 8
   n_steps: 1024
   batch_size: 256
-  learning_rate: 3.0e-4
+  learning_rate: 2.5e-4
   gamma: 0.99
   gae_lambda: 0.95
   clip_range: 0.2
-  ent_coef: 0.0
+  ent_coef: 0.02
   vf_coef: 0.5
   max_grad_norm: 0.5
   policy: "MlpPolicy"
+  # Larger policy network for complex navigation (maze, zigzag, s_curve)
+  policy_kwargs:
+    net_arch:
+      - pi: [256, 256]
+        vf: [256, 256]
   tensorboard_log_dir: "runs"
 
 env:
@@ -19,19 +24,22 @@ env:
     enabled: true
     phases:
       - name: "sparse_obstacles"
-        max_steps: 150000
-        random_obstacles_scale: 0.3
+        max_steps: 300000
+        random_obstacles_scale: 0.2
       - name: "medium_clutter"
-        max_steps: 350000
-        random_obstacles_scale: 0.7
+        max_steps: 800000
+        random_obstacles_scale: 0.5
       - name: "dense_clutter"
-        max_steps: 500000
+        max_steps: 1200000
+        random_obstacles_scale: 0.8
+      - name: "full_difficulty"
+        max_steps: 5000000
         random_obstacles_scale: 1.0
 
 logging:
   run_root: "runs"
-  save_freq: 50000
-  eval_freq: 50000
+  save_freq: 250000
+  eval_freq: 250000
   eval_episodes: 10
 
 seed: 42
