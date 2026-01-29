@@ -11,6 +11,12 @@ eval:
     - "narrow_passage_1"
     - "narrow_passage_2"
     - "open_space_1"
+    - "maze_1"
+    - "zigzag_corridor"
+    - "bottleneck_1"
+    - "dense_clutter_1"
+    - "gauntlet_1"
+    - "s_curve_1"
 
 env:
   config_path: "configs/sim.yaml"
