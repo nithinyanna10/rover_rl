@@ -8,7 +8,7 @@ from typing import Any, Dict, Callable
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 import yaml
@@ -31,43 +31,83 @@ def make_env_fn(
     """Factory to create RoverEnv instances for vectorized training."""
 
     def _init() -> gym.Env:
-        sim_cfg = load_yaml(sim_cfg_path)["sim"]
+        cfg = load_yaml(sim_cfg_path)
+        sim_cfg = cfg["sim"]
+        rover_cfg = cfg["rover"]
+        lidar_cfg = cfg["lidar"]
+        domain_rand_cfg = cfg["domain_randomization"]
 
         world_width = float(sim_cfg["world_width"])
         world_height = float(sim_cfg["world_height"])
         goal_radius = float(sim_cfg["goal_radius"])
+        maps_cfg = cfg.get("maps", {})
+        random_obstacles_cfg = maps_cfg.get("random_obstacles")
+        fixed_maps_for_training = maps_cfg.get("fixed_maps_for_training", [])
+        fixed_map_prob = float(maps_cfg.get("fixed_map_prob", 0.25))
+        maps_dir = os.path.join(os.path.dirname(__file__), "..", "rover_sim", "maps")
 
-        # Base world with no obstacles; training code will randomize.
-        world = World(width=world_width, height=world_height, obstacles=[], goal=(18.0, 18.0))
+        # Base world; obstacles are generated on reset (random or from fixed map).
+        world = World(width=world_width, height=world_height, obstacles=[], goal=(world_width - 2.0, world_height - 2.0))
 
         env_cfg = EnvConfig(
             dt=float(sim_cfg["dt"]),
             max_steps=int(sim_cfg["max_steps"]),
             rover_radius=float(sim_cfg["rover_radius"]),
-            max_linear_speed=float(sim_cfg["rover"]["max_linear_speed"]),
-            max_angular_speed=float(sim_cfg["rover"]["max_angular_speed"]),
-            linear_accel_limit=float(sim_cfg["rover"]["linear_accel_limit"]),
-            angular_accel_limit=float(sim_cfg["rover"]["angular_accel_limit"]),
-            lidar_num_rays=int(sim_cfg["lidar"]["num_rays"]),
-            lidar_fov_deg=float(sim_cfg["lidar"]["fov_deg"]),
-            lidar_max_range=float(sim_cfg["lidar"]["max_range"]),
-            lidar_noise_std=float(sim_cfg["lidar"]["noise_std"]),
-            front_sector_deg=float(sim_cfg["lidar"]["front_sector_deg"]),
+            max_linear_speed=float(rover_cfg["max_linear_speed"]),
+            max_angular_speed=float(rover_cfg["max_angular_speed"]),
+            linear_accel_limit=float(rover_cfg["linear_accel_limit"]),
+            angular_accel_limit=float(rover_cfg["angular_accel_limit"]),
+            lidar_num_rays=int(lidar_cfg["num_rays"]),
+            lidar_fov_deg=float(lidar_cfg["fov_deg"]),
+            lidar_max_range=float(lidar_cfg["max_range"]),
+            lidar_noise_std=float(lidar_cfg["noise_std"]),
+            front_sector_deg=float(lidar_cfg["front_sector_deg"]),
             goal_radius=goal_radius,
         )
-
-        domain_rand_cfg = sim_cfg["domain_randomization"]
 
         env = RoverEnv(
             world=world,
             config=env_cfg,
             domain_randomization_cfg=domain_rand_cfg,
             seed=seed + rank,
+            curriculum_scale=0.3,
+            random_obstacles_cfg=random_obstacles_cfg,
+            fixed_maps_dir=maps_dir if fixed_maps_for_training else None,
+            fixed_map_names=fixed_maps_for_training or None,
+            fixed_map_prob=fixed_map_prob,
         )
         env = Monitor(env)
         return env
 
     return _init
+
+
+class CurriculumCallback(BaseCallback):
+    """Updates curriculum_scale on all envs based on current timestep."""
+
+    def __init__(self, total_timesteps: int, phases: list, verbose: int = 0):
+        super().__init__(verbose)
+        self.total_timesteps = total_timesteps
+        self.phases = phases  # list of {"max_steps": N, "random_obstacles_scale": s}
+
+    def _on_step(self) -> bool:
+        if self.n_calls == 0:
+            return True
+        # Update curriculum every 1000 steps to avoid overhead
+        if self.n_calls % 1000 != 0:
+            return True
+        t = self.num_timesteps
+        scale = 0.0
+        for p in self.phases:
+            if t >= p["max_steps"]:
+                scale = p["random_obstacles_scale"]
+            else:
+                break
+        try:
+            self.training_env.env_method("set_curriculum_scale", scale)
+        except Exception:
+            pass
+        return True
 
 
 def main() -> None:
@@ -114,6 +154,8 @@ def main() -> None:
 
     total_timesteps = args.total_timesteps or int(train_cfg.get("total_timesteps", 500000))
 
+    policy_kwargs = train_cfg.get("policy_kwargs") or {}
+
     model = PPO(
         policy=train_cfg.get("policy", "MlpPolicy"),
         env=vec_env,
@@ -126,6 +168,7 @@ def main() -> None:
         ent_coef=float(train_cfg.get("ent_coef", 0.0)),
         vf_coef=float(train_cfg.get("vf_coef", 0.5)),
         max_grad_norm=float(train_cfg.get("max_grad_norm", 0.5)),
+        policy_kwargs=policy_kwargs,
         tensorboard_log=run_root,
         seed=seed,
         verbose=1,
@@ -156,9 +199,14 @@ def main() -> None:
         deterministic=True,
     )
 
+    curriculum_callback = CurriculumCallback(
+        total_timesteps=total_timesteps,
+        phases=curriculum_phases,
+    )
+
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, eval_callback],
+        callback=[curriculum_callback, checkpoint_callback, eval_callback],
         progress_bar=True,
     )
 
