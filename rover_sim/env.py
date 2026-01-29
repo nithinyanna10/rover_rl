@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple, Optional, List
 import math
+import os
 import random
 
 import gymnasium as gym
@@ -44,12 +45,20 @@ class RoverEnv(gym.Env):
         domain_randomization_cfg: Dict[str, Any],
         seed: int = 0,
         curriculum_scale: float = 1.0,
+        random_obstacles_cfg: Optional[Dict[str, Any]] = None,
+        fixed_maps_dir: Optional[str] = None,
+        fixed_map_names: Optional[List[str]] = None,
+        fixed_map_prob: float = 0.0,
     ) -> None:
         super().__init__()
         self.world = world
         self.cfg = config
+        self.random_obstacles_cfg = random_obstacles_cfg
         self.domain_randomization_cfg = domain_randomization_cfg
         self.curriculum_scale = curriculum_scale
+        self.fixed_maps_dir = fixed_maps_dir
+        self.fixed_map_names = fixed_map_names or []
+        self.fixed_map_prob = fixed_map_prob
 
         self.np_random, _ = gym.utils.seeding.np_random(seed)
         self.rng = random.Random(int(seed))
@@ -109,6 +118,42 @@ class RoverEnv(gym.Env):
             self.rng.seed(int(seed))
 
         self._step_count = 0
+
+        # With fixed_map_prob, load a fixed complex map (maze, zigzag, etc.) so policy sees hard layouts
+        use_fixed_map = (
+            self.fixed_map_names
+            and self.fixed_maps_dir
+            and self.fixed_map_prob > 0.0
+            and self.rng.random() < self.fixed_map_prob
+        )
+        if use_fixed_map:
+            map_name = self.rng.choice(self.fixed_map_names)
+            map_path = os.path.join(self.fixed_maps_dir, f"{map_name}.json")
+            if os.path.isfile(map_path):
+                loaded = World.from_map_file(self.world.width, self.world.height, map_path)
+                self.world.clear_obstacles()
+                for o in loaded.obstacles:
+                    self.world.add_obstacle(o)
+                self.world.goal = loaded.goal
+        # Else: generate random obstacles for curriculum (training only)
+        elif self.random_obstacles_cfg is not None and self.curriculum_scale > 0.0:
+            ro = self.random_obstacles_cfg
+            num_min = int(ro["num_min"])
+            num_max = int(ro["num_max"])
+            n = num_min + int(self.curriculum_scale * max(0, num_max - num_min))
+            n = max(num_min, min(num_max, n))
+            min_size = tuple(ro["min_size"])
+            max_size = tuple(ro["max_size"])
+            self.world.clear_obstacles()
+            self.world.generate_random_obstacles(
+                num_min=n,
+                num_max=n,
+                min_size=min_size,
+                max_size=max_size,
+                rng=self.rng,
+                margin=1.0,
+            )
+            self.world.goal = (self.world.width - 2.0, self.world.height - 2.0)
 
         # Domain randomization values
         dr_cfg = self.domain_randomization_cfg
@@ -251,6 +296,6 @@ class RoverEnv(gym.Env):
     # Curriculum control
     # ------------------------------------------------------------------
     def set_curriculum_scale(self, scale: float) -> None:
-        """Adjust difficulty scaling (used for domain randomization)."""
+        """Adjust difficulty scaling (used for domain randomization and obstacle count)."""
         self.curriculum_scale = float(scale)
 
