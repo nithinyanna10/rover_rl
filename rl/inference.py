@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import time
 from typing import Any, Dict
 
+import pygame
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
@@ -24,38 +26,43 @@ def load_yaml(path: str) -> Dict[str, Any]:
 
 
 def make_env_and_renderer(sim_cfg_path: str) -> tuple[RoverEnv, PygameRenderer, LidarSensor]:
-    sim_cfg = load_yaml(sim_cfg_path)["sim"]
+    cfg = load_yaml(sim_cfg_path)
+    sim_cfg = cfg["sim"]
+    rover_cfg = cfg["rover"]
+    lidar_cfg = cfg["lidar"]
+    domain_rand_cfg = cfg["domain_randomization"]
+    render_cfg = cfg["render"]
+    maps_cfg = cfg.get("maps", {})
 
     world_width = float(sim_cfg["world_width"])
     world_height = float(sim_cfg["world_height"])
     goal_radius = float(sim_cfg["goal_radius"])
+    default_map = maps_cfg.get("default_fixed_map", "corridor_map")
 
     world = World.from_map_file(
         width=world_width,
         height=world_height,
-        path=os.path.join("rover_sim", "maps", f"{sim_cfg['maps']['default_fixed_map']}.json"),
+        path=os.path.join("rover_sim", "maps", f"{default_map}.json"),
     )
 
     env_cfg = EnvConfig(
         dt=float(sim_cfg["dt"]),
         max_steps=int(sim_cfg["max_steps"]),
         rover_radius=float(sim_cfg["rover_radius"]),
-        max_linear_speed=float(sim_cfg["rover"]["max_linear_speed"]),
-        max_angular_speed=float(sim_cfg["rover"]["max_angular_speed"]),
-        linear_accel_limit=float(sim_cfg["rover"]["linear_accel_limit"]),
-        angular_accel_limit=float(sim_cfg["rover"]["angular_accel_limit"]),
-        lidar_num_rays=int(sim_cfg["lidar"]["num_rays"]),
-        lidar_fov_deg=float(sim_cfg["lidar"]["fov_deg"]),
-        lidar_max_range=float(sim_cfg["lidar"]["max_range"]),
-        lidar_noise_std=float(sim_cfg["lidar"]["noise_std"]),
-        front_sector_deg=float(sim_cfg["lidar"]["front_sector_deg"]),
+        max_linear_speed=float(rover_cfg["max_linear_speed"]),
+        max_angular_speed=float(rover_cfg["max_angular_speed"]),
+        linear_accel_limit=float(rover_cfg["linear_accel_limit"]),
+        angular_accel_limit=float(rover_cfg["angular_accel_limit"]),
+        lidar_num_rays=int(lidar_cfg["num_rays"]),
+        lidar_fov_deg=float(lidar_cfg["fov_deg"]),
+        lidar_max_range=float(lidar_cfg["max_range"]),
+        lidar_noise_std=float(lidar_cfg["noise_std"]),
+        front_sector_deg=float(lidar_cfg["front_sector_deg"]),
         goal_radius=goal_radius,
     )
-    domain_rand_cfg = sim_cfg["domain_randomization"]
 
-    env = RoverEnv(world=world, config=env_cfg, domain_randomization_cfg=domain_rand_cfg, seed=sim_cfg.get("seed", 0))
+    env = RoverEnv(world=world, config=env_cfg, domain_randomization_cfg=domain_rand_cfg, seed=cfg.get("seed", 0))
 
-    render_cfg = sim_cfg["render"]
     renderer = PygameRenderer(
         world=world,
         window_width=int(render_cfg["window_width"]),
@@ -67,13 +74,13 @@ def make_env_and_renderer(sim_cfg_path: str) -> tuple[RoverEnv, PygameRenderer, 
 
     lidar_sensor = LidarSensor(
         LidarConfig(
-            num_rays=int(sim_cfg["lidar"]["num_rays"]),
-            fov_deg=float(sim_cfg["lidar"]["fov_deg"]),
-            max_range=float(sim_cfg["lidar"]["max_range"]),
-            noise_std=float(sim_cfg["lidar"]["noise_std"]),
+            num_rays=int(lidar_cfg["num_rays"]),
+            fov_deg=float(lidar_cfg["fov_deg"]),
+            max_range=float(lidar_cfg["max_range"]),
+            noise_std=float(lidar_cfg["noise_std"]),
         ),
-        rng=np.random.RandomState(sim_cfg.get("seed", 0)),
-    )  # type: ignore[arg-type]
+        rng=random.Random(cfg.get("seed", 0)),
+    )
 
     return env, renderer, lidar_sensor
 
@@ -103,15 +110,18 @@ def main() -> None:
     cfg = load_yaml(args.config)
     env_cfg_root = cfg["env"]
     sim_cfg_path = env_cfg_root["config_path"]
-    sim_cfg = load_yaml(sim_cfg_path)["sim"]
+    sim_full_cfg = load_yaml(sim_cfg_path)
+    sim_cfg = sim_full_cfg["sim"]
+    shield_cfg_dict = sim_full_cfg["shield"]
+    lidar_cfg_dict = sim_full_cfg["lidar"]
 
     env, renderer, lidar_sensor = make_env_and_renderer(sim_cfg_path)
 
     model = PPO.load(args.model_path)
 
     shield_cfg = ShieldConfig(
-        min_distance=float(sim_cfg["shield"]["min_distance"]),
-        turn_angular_speed=float(sim_cfg["shield"]["turn_angular_speed"]),
+        min_distance=float(shield_cfg_dict["min_distance"]),
+        turn_angular_speed=float(shield_cfg_dict["turn_angular_speed"]),
     )
     shield = LidarSafetyShield(shield_cfg)
 
@@ -124,9 +134,33 @@ def main() -> None:
     done = False
     truncated = False
 
-    clock = gym.utils.seeding.np_random(sim_cfg.get("seed", 0))[0]
+    # Debug: print starting state
+    state = env.rover.get_state()
+    print(f"Starting episode:")
+    print(f"  Rover at ({state.x:.2f}, {state.y:.2f}), yaw={state.yaw:.2f}")
+    print(f"  Goal at ({env.world.goal[0]:.2f}, {env.world.goal[1]:.2f})")
+    print(f"  Distance to goal: {env.world.distance_to_goal(state.x, state.y):.2f}m")
+
+    # Draw initial frame so the window appears immediately
+    lidar_ranges_init = lidar_sensor.scan(
+        world=env.world,
+        pose=(state.x, state.y, state.yaw),
+        noise_scale=1.0,
+    )
+    renderer.draw(
+        rover_state=state,
+        lidar_ranges=lidar_ranges_init,
+        lidar_fov_deg=lidar_cfg_dict["fov_deg"],
+        dt=env.cfg.dt,
+        fps=0.0,
+    )
+    renderer.tick(sim_cfg["fps"])
+
     step_idx = 0
     while not (done or truncated):
+        # Process events so the window stays responsive and visible (important on macOS)
+        pygame.event.pump()
+
         step_start = time.time()
 
         action, _ = model.predict(obs, deterministic=True)
@@ -140,17 +174,26 @@ def main() -> None:
             noise_scale=1.0,
         )
         shielded_action, overridden = shield.filter_action(
-            action, lidar_ranges, lidar_fov_deg=sim_cfg["lidar"]["fov_deg"]
+            action, lidar_ranges, lidar_fov_deg=lidar_cfg_dict["fov_deg"]
         )
 
         obs, reward, done, truncated, info = env.step(shielded_action)
+
+        # Debug: print termination reason
+        if done or truncated:
+            if info.get("goal_reached", False):
+                print(f"✓ Goal reached in {step_idx + 1} steps!")
+            elif info.get("collision", False):
+                print(f"✗ Collision at step {step_idx + 1}")
+            elif info.get("timeout", False):
+                print(f"⏱ Timeout at step {step_idx + 1}")
 
         # Render
         fps = renderer.tick(sim_cfg["fps"])
         renderer.draw(
             rover_state=env.rover.get_state(),
             lidar_ranges=lidar_ranges,
-            lidar_fov_deg=sim_cfg["lidar"]["fov_deg"],
+            lidar_fov_deg=lidar_cfg_dict["fov_deg"],
             dt=env.cfg.dt,
             fps=fps,
         )
@@ -179,6 +222,12 @@ def main() -> None:
             )
 
         step_idx += 1
+
+    # Keep window visible for a moment so the user can see the final state
+    print("Episode finished. Closing in 3 seconds...")
+    for _ in range(int(sim_cfg["fps"] * 3)):
+        pygame.event.pump()
+        renderer.tick(sim_cfg["fps"])
 
     renderer.close()
     if telemetry_logger is not None:
