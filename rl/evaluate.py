@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, List
 
+import pygame
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
@@ -14,6 +15,8 @@ import yaml
 
 from rover_sim.world import World
 from rover_sim.env import RoverEnv, EnvConfig
+from rover_sim.render import PygameRenderer
+from rover_sim.sensors import LidarConfig, LidarSensor
 
 
 def load_yaml(path: str) -> Dict[str, Any]:
@@ -21,12 +24,17 @@ def load_yaml(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def make_eval_env(sim_cfg: Dict[str, Any], map_name: str, seed: int) -> gym.Env:
+def make_eval_env(cfg: Dict[str, Any], map_name: str, seed: int) -> gym.Env:
+    sim_cfg = cfg["sim"]
+    rover_cfg = cfg["rover"]
+    lidar_cfg = cfg["lidar"]
+    domain_rand_cfg = cfg["domain_randomization"]
+    maps_cfg = cfg.get("maps", {})
+
     world_width = float(sim_cfg["world_width"])
     world_height = float(sim_cfg["world_height"])
     goal_radius = float(sim_cfg["goal_radius"])
 
-    maps_cfg = sim_cfg["maps"]
     maps_dir = os.path.join(os.path.dirname(__file__), "..", "rover_sim", "maps")
     map_file = os.path.join(maps_dir, f"{map_name}.json")
     world = World.from_map_file(width=world_width, height=world_height, path=map_file)
@@ -35,20 +43,28 @@ def make_eval_env(sim_cfg: Dict[str, Any], map_name: str, seed: int) -> gym.Env:
         dt=float(sim_cfg["dt"]),
         max_steps=int(sim_cfg["max_steps"]),
         rover_radius=float(sim_cfg["rover_radius"]),
-        max_linear_speed=float(sim_cfg["rover"]["max_linear_speed"]),
-        max_angular_speed=float(sim_cfg["rover"]["max_angular_speed"]),
-        linear_accel_limit=float(sim_cfg["rover"]["linear_accel_limit"]),
-        angular_accel_limit=float(sim_cfg["rover"]["angular_accel_limit"]),
-        lidar_num_rays=int(sim_cfg["lidar"]["num_rays"]),
-        lidar_fov_deg=float(sim_cfg["lidar"]["fov_deg"]),
-        lidar_max_range=float(sim_cfg["lidar"]["max_range"]),
-        lidar_noise_std=float(sim_cfg["lidar"]["noise_std"]),
-        front_sector_deg=float(sim_cfg["lidar"]["front_sector_deg"]),
+        max_linear_speed=float(rover_cfg["max_linear_speed"]),
+        max_angular_speed=float(rover_cfg["max_angular_speed"]),
+        linear_accel_limit=float(rover_cfg["linear_accel_limit"]),
+        angular_accel_limit=float(rover_cfg["angular_accel_limit"]),
+        lidar_num_rays=int(lidar_cfg["num_rays"]),
+        lidar_fov_deg=float(lidar_cfg["fov_deg"]),
+        lidar_max_range=float(lidar_cfg["max_range"]),
+        lidar_noise_std=float(lidar_cfg["noise_std"]),
+        front_sector_deg=float(lidar_cfg["front_sector_deg"]),
         goal_radius=goal_radius,
     )
-    domain_rand_cfg = sim_cfg["domain_randomization"]
 
-    env = RoverEnv(world=world, config=env_cfg, domain_randomization_cfg=domain_rand_cfg, seed=seed)
+    # Disable domain randomization for evaluation (use minimal/noise for deterministic results)
+    eval_domain_rand = {
+        "friction_scale_range": [1.0, 1.0],  # No friction variation
+        "slip_std_linear": 0.0,
+        "slip_std_angular": 0.0,
+        "lidar_noise_scale_range": [1.0, 1.0],  # Fixed noise
+        "latency_steps_range": [0, 0],  # No latency
+    }
+
+    env = RoverEnv(world=world, config=env_cfg, domain_randomization_cfg=eval_domain_rand, seed=seed, curriculum_scale=0.0)
     return env
 
 
@@ -66,13 +82,18 @@ def main() -> None:
         required=True,
         help="Path to trained PPO .zip checkpoint.",
     )
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Show pygame visualization (renders first episode of each map).",
+    )
     args = parser.parse_args()
 
     cfg = load_yaml(args.config)
     eval_cfg = cfg["eval"]
     env_cfg_root = cfg["env"]
     sim_cfg_path = env_cfg_root["config_path"]
-    sim_cfg = load_yaml(sim_cfg_path)["sim"]
+    sim_full_cfg = load_yaml(sim_cfg_path)
 
     seed = int(cfg.get("seed", 0))
     episodes_per_map = int(eval_cfg.get("episodes_per_map", 20))
@@ -80,12 +101,43 @@ def main() -> None:
 
     model = PPO.load(args.model_path)
 
+    # Setup renderer if requested
+    renderer = None
+    lidar_sensor = None
+    if args.render:
+        sim_cfg = sim_full_cfg["sim"]
+        render_cfg = sim_full_cfg["render"]
+        lidar_cfg = sim_full_cfg["lidar"]
+        import random
+        lidar_sensor = LidarSensor(
+            LidarConfig(
+                num_rays=int(lidar_cfg["num_rays"]),
+                fov_deg=float(lidar_cfg["fov_deg"]),
+                max_range=float(lidar_cfg["max_range"]),
+                noise_std=float(lidar_cfg["noise_std"]),
+            ),
+            rng=random.Random(seed),
+        )
+
     all_episode_rewards: List[float] = []
     results_by_map: Dict[str, Dict[str, Any]] = {}
 
     for map_name in map_names:
         print(f"Evaluating on map '{map_name}'...")
-        env = make_eval_env(sim_cfg, map_name, seed=seed)
+        env = make_eval_env(sim_full_cfg, map_name, seed=seed)
+
+        # Setup renderer for this map if rendering
+        if args.render and renderer is None:
+            sim_cfg = sim_full_cfg["sim"]
+            render_cfg = sim_full_cfg["render"]
+            renderer = PygameRenderer(
+                world=env.world,
+                window_width=int(render_cfg["window_width"]),
+                window_height=int(render_cfg["window_height"]),
+                show_lidar=bool(render_cfg.get("show_lidar", True)),
+                show_trail=bool(render_cfg.get("show_trail", True)),
+                trail_max_length=int(render_cfg.get("trail_max_length", 500)),
+            )
 
         successes = 0
         collisions = 0
@@ -101,12 +153,57 @@ def main() -> None:
             last_pos = None
             path_len = 0.0
             step_idx = 0
+            
+            # Debug: print starting position for first episode
+            if ep == 0:
+                start_state = env.rover.get_state()
+                print(f"  Episode {ep+1}: Start at ({start_state.x:.2f}, {start_state.y:.2f}), goal at ({env.world.goal[0]:.2f}, {env.world.goal[1]:.2f})")
+
+            # Only render first episode of each map
+            render_this_episode = args.render and ep == 0
+            if render_this_episode and renderer is not None:
+                renderer.world = env.world  # Update world reference
+                state = env.rover.get_state()
+                lidar_ranges_init = lidar_sensor.scan(
+                    world=env.world,
+                    pose=(state.x, state.y, state.yaw),
+                    noise_scale=1.0,
+                )
+                renderer.draw(
+                    rover_state=state,
+                    lidar_ranges=lidar_ranges_init,
+                    lidar_fov_deg=sim_full_cfg["lidar"]["fov_deg"],
+                    dt=sim_full_cfg["sim"]["dt"],
+                    fps=0.0,
+                )
+                renderer.tick(sim_full_cfg["sim"]["fps"])
 
             while not (done or truncated):
                 action, _ = model.predict(obs, deterministic=True)
+                # Debug: print first action for first episode
+                if ep == 0 and step_idx == 0:
+                    print(f"    First action: v={action[0]:.3f}, w={action[1]:.3f}")
                 obs, reward, done, truncated, info = env.step(action)
                 ep_reward += float(reward)
                 step_idx += 1
+
+                # Render if enabled for this episode
+                if render_this_episode and renderer is not None:
+                    pygame.event.pump()
+                    state = env.rover.get_state()
+                    lidar_ranges = lidar_sensor.scan(
+                        world=env.world,
+                        pose=(state.x, state.y, state.yaw),
+                        noise_scale=1.0,
+                    )
+                    fps = renderer.tick(sim_full_cfg["sim"]["fps"])
+                    renderer.draw(
+                        rover_state=state,
+                        lidar_ranges=lidar_ranges,
+                        lidar_fov_deg=sim_full_cfg["lidar"]["fov_deg"],
+                        dt=sim_full_cfg["sim"]["dt"],
+                        fps=fps,
+                    )
 
                 # Approximate path length by distance between successive positions
                 state = env.rover.get_state()
@@ -121,8 +218,21 @@ def main() -> None:
                     if info.get("goal_reached", False):
                         successes += 1
                         time_to_goal.append(step_idx)
+                        if ep == 0:
+                            print(f"    ✓ Goal reached in {step_idx} steps")
                     if info.get("collision", False):
                         collisions += 1
+                        if ep == 0:
+                            print(f"    ✗ Collision at step {step_idx}")
+                    if info.get("timeout", False):
+                        if ep == 0:
+                            print(f"    ⏱ Timeout at step {step_idx}")
+
+            # Pause briefly after rendering an episode
+            if render_this_episode and renderer is not None:
+                for _ in range(int(sim_full_cfg["sim"]["fps"] * 2)):
+                    pygame.event.pump()
+                    renderer.tick(sim_full_cfg["sim"]["fps"])
 
             path_lengths.append(path_len)
             ep_rewards.append(ep_reward)
@@ -163,6 +273,31 @@ def main() -> None:
         json.dump(metrics, f, indent=2)
 
     print(f"Saved evaluation metrics to {metrics_path}")
+    print()
+    print("=" * 72)
+    print("EVALUATION METRICS SUMMARY")
+    print("=" * 72)
+    print(f"  Overall success rate:    {metrics['success_rate']:.1%}")
+    print(f"  Overall collision rate:  {metrics['collision_rate']:.1%}")
+    print(f"  Avg episode reward:      {metrics['avg_episode_reward']:.2f}" if metrics.get('avg_episode_reward') is not None else "  Avg episode reward:      N/A")
+    print()
+    print("Per-map results:")
+    print("-" * 72)
+    print(f"  {'Map':<22} {'Success':>8} {'Collision':>10} {'Avg time':>10} {'Avg reward':>10}")
+    print("-" * 72)
+    for map_name, r in metrics["per_map"].items():
+        sr = r["success_rate"]
+        cr = r["collision_rate"]
+        t2g = r.get("avg_time_to_goal")
+        t2g_str = f"{t2g:.0f}" if t2g is not None else "N/A"
+        rew = r.get("avg_episode_reward")
+        rew_str = f"{rew:.2f}" if rew is not None else "N/A"
+        print(f"  {map_name:<22} {sr:>7.1%} {cr:>9.1%} {t2g_str:>10} {rew_str:>10}")
+    print("-" * 72)
+    print()
+
+    if renderer is not None:
+        renderer.close()
 
 
 if __name__ == "__main__":
