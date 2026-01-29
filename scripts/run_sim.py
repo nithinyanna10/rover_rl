@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict
+
+# Ensure project root is on path when running this script directly
+_script_dir = Path(__file__).resolve().parent
+_project_root = _script_dir.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
 import pygame
 import yaml
@@ -28,15 +36,20 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    sim_cfg = load_yaml(args.config)["sim"]
+    cfg = load_yaml(args.config)
+    sim_cfg = cfg["sim"]
+    rover_cfg = cfg["rover"]
+    lidar_cfg = cfg["lidar"]
+    render_cfg = cfg["render"]
+    domain_rand_cfg = cfg["domain_randomization"]
+    maps_cfg = cfg.get("maps", {})
 
     world_width = float(sim_cfg["world_width"])
     world_height = float(sim_cfg["world_height"])
     goal_radius = float(sim_cfg["goal_radius"])
 
     # Default map
-    maps_cfg = sim_cfg["maps"]
-    default_map = maps_cfg["default_fixed_map"]
+    default_map = maps_cfg.get("default_fixed_map", "corridor_map")
     map_path = os.path.join("rover_sim", "maps", f"{default_map}.json")
     world = World.from_map_file(width=world_width, height=world_height, path=map_path)
 
@@ -44,22 +57,20 @@ def main() -> None:
         dt=float(sim_cfg["dt"]),
         max_steps=int(sim_cfg["max_steps"]),
         rover_radius=float(sim_cfg["rover_radius"]),
-        max_linear_speed=float(sim_cfg["rover"]["max_linear_speed"]),
-        max_angular_speed=float(sim_cfg["rover"]["max_angular_speed"]),
-        linear_accel_limit=float(sim_cfg["rover"]["linear_accel_limit"]),
-        angular_accel_limit=float(sim_cfg["rover"]["angular_accel_limit"]),
-        lidar_num_rays=int(sim_cfg["lidar"]["num_rays"]),
-        lidar_fov_deg=float(sim_cfg["lidar"]["fov_deg"]),
-        lidar_max_range=float(sim_cfg["lidar"]["max_range"]),
-        lidar_noise_std=float(sim_cfg["lidar"]["noise_std"]),
-        front_sector_deg=float(sim_cfg["lidar"]["front_sector_deg"]),
+        max_linear_speed=float(rover_cfg["max_linear_speed"]),
+        max_angular_speed=float(rover_cfg["max_angular_speed"]),
+        linear_accel_limit=float(rover_cfg["linear_accel_limit"]),
+        angular_accel_limit=float(rover_cfg["angular_accel_limit"]),
+        lidar_num_rays=int(lidar_cfg["num_rays"]),
+        lidar_fov_deg=float(lidar_cfg["fov_deg"]),
+        lidar_max_range=float(lidar_cfg["max_range"]),
+        lidar_noise_std=float(lidar_cfg["noise_std"]),
+        front_sector_deg=float(lidar_cfg["front_sector_deg"]),
         goal_radius=goal_radius,
     )
-    domain_rand_cfg = sim_cfg["domain_randomization"]
 
-    env = RoverEnv(world=world, config=env_cfg, domain_randomization_cfg=domain_rand_cfg, seed=sim_cfg.get("seed", 0))
+    env = RoverEnv(world=world, config=env_cfg, domain_randomization_cfg=domain_rand_cfg, seed=cfg.get("seed", 0))
 
-    render_cfg = sim_cfg["render"]
     renderer = PygameRenderer(
         world=world,
         window_width=int(render_cfg["window_width"]),
@@ -71,10 +82,10 @@ def main() -> None:
 
     lidar_sensor = LidarSensor(
         LidarConfig(
-            num_rays=int(sim_cfg["lidar"]["num_rays"]),
-            fov_deg=float(sim_cfg["lidar"]["fov_deg"]),
-            max_range=float(sim_cfg["lidar"]["max_range"]),
-            noise_std=float(sim_cfg["lidar"]["noise_std"]),
+            num_rays=int(lidar_cfg["num_rays"]),
+            fov_deg=float(lidar_cfg["fov_deg"]),
+            max_range=float(lidar_cfg["max_range"]),
+            noise_std=float(lidar_cfg["noise_std"]),
         ),
         rng=env.rng,
     )
@@ -118,7 +129,7 @@ def main() -> None:
         renderer.draw(
             rover_state=env.rover.get_state(),
             lidar_ranges=lidar_ranges,
-            lidar_fov_deg=sim_cfg["lidar"]["fov_deg"],
+            lidar_fov_deg=lidar_cfg["fov_deg"],
             dt=env.cfg.dt,
             fps=fps,
         )
