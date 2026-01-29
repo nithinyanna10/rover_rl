@@ -1,0 +1,9 @@
+.venv-rover/
+__pycache__/
+*.pyc
+runs/
+telemetry_logs/
+*.zip
+.pytest_cache/
+.coverage
+htmlcov/
