@@ -1,0 +1,11 @@
+gymnasium>=0.29.0
+stable-baselines3>=2.2.0
+torch>=2.1.0
+numpy>=1.26.0
+pygame>=2.5.0
+streamlit>=1.32.0
+matplotlib>=3.8.0
+pyyaml>=6.0.0
+pandas>=2.2.0
+tensorboard>=2.16.0
+typing-extensions>=4.8.0

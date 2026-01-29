@@ -1,0 +1,21 @@
+eval:
+  episodes_per_map: 20
+  maps:
+    - "corridor_map"
+    - "clutter_map_1"
+    - "clutter_map_2"
+    - "clutter_map_3"
+    - "clutter_map_4"
+    - "u_shape_1"
+    - "u_shape_2"
+    - "narrow_passage_1"
+    - "narrow_passage_2"
+    - "open_space_1"
+
+env:
+  config_path: "configs/sim.yaml"
+
+logging:
+  eval_root: "runs"
+
+seed: 2026

@@ -1,0 +1,37 @@
+train:
+  total_timesteps: 500000
+  n_envs: 4
+  n_steps: 1024
+  batch_size: 256
+  learning_rate: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  policy: "MlpPolicy"
+  tensorboard_log_dir: "runs"
+
+env:
+  config_path: "configs/sim.yaml"
+  curriculum:
+    enabled: true
+    phases:
+      - name: "sparse_obstacles"
+        max_steps: 150000
+        random_obstacles_scale: 0.3
+      - name: "medium_clutter"
+        max_steps: 350000
+        random_obstacles_scale: 0.7
+      - name: "dense_clutter"
+        max_steps: 500000
+        random_obstacles_scale: 1.0
+
+logging:
+  run_root: "runs"
+  save_freq: 50000
+  eval_freq: 50000
+  eval_episodes: 10
+
+seed: 42

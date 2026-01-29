@@ -1,0 +1,61 @@
+sim:
+  dt: 0.05              # seconds per physics step
+  fps: 30               # target render FPS
+  world_width: 20.0     # meters
+  world_height: 20.0    # meters
+  rover_radius: 0.4     # meters
+  goal_radius: 0.5      # meters
+  max_steps: 600
+
+rover:
+  max_linear_speed: 1.0    # m/s
+  max_angular_speed: 1.5   # rad/s
+  linear_accel_limit: 2.0  # m/s^2
+  angular_accel_limit: 3.0 # rad/s^2
+
+lidar:
+  num_rays: 64
+  fov_deg: 270.0
+  max_range: 10.0
+  noise_std: 0.03
+  front_sector_deg: 60.0
+
+domain_randomization:
+  friction_scale_range: [0.7, 1.2]
+  slip_std_linear: 0.1
+  slip_std_angular: 0.2
+  lidar_noise_scale_range: [0.5, 1.5]
+  latency_steps_range: [0, 2]
+
+shield:
+  enabled: true
+  min_distance: 0.4
+  turn_angular_speed: 1.2
+
+render:
+  window_width: 800
+  window_height: 800
+  show_lidar: true
+  show_trail: true
+  trail_max_length: 500
+
+maps:
+  default_fixed_map: "corridor_map"
+  fixed_maps:
+    - "corridor_map"
+    - "clutter_map_1"
+    - "clutter_map_2"
+    - "clutter_map_3"
+    - "clutter_map_4"
+    - "u_shape_1"
+    - "u_shape_2"
+    - "narrow_passage_1"
+    - "narrow_passage_2"
+    - "open_space_1"
+  random_obstacles:
+    num_min: 5
+    num_max: 20
+    min_size: [0.5, 0.5]
+    max_size: [3.0, 3.0]
+
+seed: 1234
