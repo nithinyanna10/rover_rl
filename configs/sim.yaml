@@ -5,7 +5,7 @@ sim:
   world_height: 20.0    # meters
   rover_radius: 0.4     # meters
   goal_radius: 0.5      # meters
-  max_steps: 600
+  max_steps: 800        # more time for hard maps (maze, zigzag, s_curve)
 
 rover:
   max_linear_speed: 1.0    # m/s
@@ -41,6 +41,15 @@ render:
 
 maps:
   default_fixed_map: "corridor_map"
+  # During training, this fraction of resets uses a random map from fixed_maps_for_training
+  fixed_map_prob: 0.5
+  fixed_maps_for_training:
+    - "maze_1"
+    - "zigzag_corridor"
+    - "bottleneck_1"
+    - "s_curve_1"
+    - "gauntlet_1"
+    - "dense_clutter_1"
   fixed_maps:
     - "corridor_map"
     - "clutter_map_1"
@@ -52,9 +61,15 @@ maps:
     - "narrow_passage_1"
     - "narrow_passage_2"
     - "open_space_1"
+    - "maze_1"
+    - "zigzag_corridor"
+    - "bottleneck_1"
+    - "dense_clutter_1"
+    - "gauntlet_1"
+    - "s_curve_1"
   random_obstacles:
     num_min: 5
-    num_max: 20
+    num_max: 25
     min_size: [0.5, 0.5]
     max_size: [3.0, 3.0]
 
