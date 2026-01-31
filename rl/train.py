@@ -93,18 +93,19 @@ class CurriculumCallback(BaseCallback):
     def _on_step(self) -> bool:
         if self.n_calls == 0:
             return True
-        # Update curriculum every 1000 steps to avoid overhead
         if self.n_calls % 1000 != 0:
             return True
         t = self.num_timesteps
-        scale = 0.0
+        # Use first phase as default, then apply phase where t >= max_steps
+        scale = self.phases[0]["random_obstacles_scale"] if self.phases else 0.0
+        fixed_map_prob = self.phases[0].get("fixed_map_prob", 0.0) if self.phases else 0.0
         for p in self.phases:
             if t >= p["max_steps"]:
                 scale = p["random_obstacles_scale"]
-            else:
-                break
+                fixed_map_prob = p.get("fixed_map_prob", fixed_map_prob)
         try:
             self.training_env.env_method("set_curriculum_scale", scale)
+            self.training_env.env_method("set_fixed_map_prob", fixed_map_prob)
         except Exception:
             pass
         return True
