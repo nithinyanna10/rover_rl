@@ -26,15 +26,19 @@ env:
       - name: "sparse_obstacles"
         max_steps: 300000
         random_obstacles_scale: 0.2
+        fixed_map_prob: 0.3
       - name: "medium_clutter"
         max_steps: 800000
         random_obstacles_scale: 0.5
+        fixed_map_prob: 0.4
       - name: "dense_clutter"
         max_steps: 1200000
         random_obstacles_scale: 0.8
+        fixed_map_prob: 0.5
       - name: "full_difficulty"
         max_steps: 5000000
         random_obstacles_scale: 1.0
+        fixed_map_prob: 0.7   # focus on hard maps in final phase
 
 logging:
   run_root: "runs"
