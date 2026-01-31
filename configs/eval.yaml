@@ -1,5 +1,5 @@
 eval:
-  episodes_per_map: 20
+  episodes_per_map: 30   # more episodes for stable metrics
   maps:
     - "corridor_map"
     - "clutter_map_1"
