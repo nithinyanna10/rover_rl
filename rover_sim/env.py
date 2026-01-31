@@ -237,7 +237,13 @@ class RoverEnv(gym.Env):
         terminated = bool(collided or reached_goal)
         truncated = bool(timeout and not terminated)
 
-        # Reward shaping via shared reward module
+        # Build obs once (needed for min_lidar and for return)
+        obs = self._get_obs()
+        min_lidar_norm = float(np.min(obs[: self.cfg.lidar_num_rays]))
+        linear_vel = float(effective_action[0])
+        angular_vel = float(effective_action[1])
+
+        # Reward shaping via shared reward module (includes close-turn / close-speed penalties)
         action_norm = float(np.linalg.norm(effective_action, ord=2))
         jerk_norm = float(np.linalg.norm(effective_action - self._last_action, ord=2))
         reward_components = compute_reward(
@@ -247,14 +253,15 @@ class RoverEnv(gym.Env):
             reached_goal=reached_goal,
             action_norm=action_norm,
             jerk_norm=jerk_norm,
+            min_lidar_normalized=min_lidar_norm,
+            linear_velocity=linear_vel,
+            angular_velocity=angular_vel,
         )
         progress = reward_components.progress
         self._last_distance_to_goal = distance_to_goal
         self._last_action = effective_action.copy()
 
         reward = reward_components.total()
-
-        obs = self._get_obs()
 
         info: Dict[str, Any] = {
             "distance_to_goal": distance_to_goal,
@@ -298,4 +305,8 @@ class RoverEnv(gym.Env):
     def set_curriculum_scale(self, scale: float) -> None:
         """Adjust difficulty scaling (used for domain randomization and obstacle count)."""
         self.curriculum_scale = float(scale)
+
+    def set_fixed_map_prob(self, prob: float) -> None:
+        """Set probability of loading a fixed map on reset (for curriculum)."""
+        self.fixed_map_prob = float(max(0.0, min(1.0, prob)))
 
