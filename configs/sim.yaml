@@ -41,8 +41,13 @@ render:
 
 maps:
   default_fixed_map: "corridor_map"
-  # During training, this fraction of resets uses a random map from fixed_maps_for_training
   fixed_map_prob: 0.5
+  # Mixture curriculum: always keep 20-30% easy maps (don't shift distribution too abruptly)
+  min_easy_map_prob: 0.25
+  easy_maps:
+    - "open_space_1"
+    - "clutter_map_1"
+    - "clutter_map_2"
   fixed_maps_for_training:
     - "maze_1"
     - "zigzag_corridor"
