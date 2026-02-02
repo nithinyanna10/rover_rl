@@ -10,6 +10,7 @@ import pygame
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import yaml
 
 from rover_sim.world import World
@@ -105,6 +106,12 @@ def main() -> None:
         default=None,
         help="Optional JSONL file to log telemetry.",
     )
+    parser.add_argument(
+        "--vecnormalize-path",
+        type=str,
+        default=None,
+        help="Path to vecnormalize.pkl from training (required if model was trained with VecNormalize).",
+    )
     args = parser.parse_args()
 
     cfg = load_yaml(args.config)
@@ -116,6 +123,14 @@ def main() -> None:
     lidar_cfg_dict = sim_full_cfg["lidar"]
 
     env, renderer, lidar_sensor = make_env_and_renderer(sim_cfg_path)
+    if args.vecnormalize_path and os.path.isfile(args.vecnormalize_path):
+        venv = DummyVecEnv([lambda e=env: e])  # wrap same env so render/rover/world stay in sync
+        venv = VecNormalize.load(args.vecnormalize_path, venv)
+        venv.training = False
+        venv.norm_reward = False
+        step_env = venv
+    else:
+        step_env = None
 
     model = PPO.load(args.model_path)
 
@@ -130,7 +145,13 @@ def main() -> None:
         os.makedirs(os.path.dirname(args.telemetry_path), exist_ok=True)
         telemetry_logger = TelemetryLogger(args.telemetry_path)
 
-    obs, _ = env.reset()
+    active = step_env if step_env is not None else env
+    if step_env is not None:
+        obs = active.reset()
+        infos = getattr(active, "reset_infos", None) or []
+        obs, info = obs[0], (infos[0] if infos else {})
+    else:
+        obs, info = active.reset()
     done = False
     truncated = False
 
@@ -177,7 +198,13 @@ def main() -> None:
             action, lidar_ranges, lidar_fov_deg=lidar_cfg_dict["fov_deg"]
         )
 
-        obs, reward, done, truncated, info = env.step(shielded_action)
+        if step_env is not None:
+            shielded_action = np.expand_dims(shielded_action, 0)
+            step_obs, rewards, dones, infos = active.step(shielded_action)
+            obs, reward, done, info = step_obs[0], float(rewards[0]), bool(dones[0]), (infos[0] if infos else {})
+            truncated = done
+        else:
+            obs, reward, done, truncated, info = active.step(shielded_action)
 
         # Debug: print termination reason
         if done or truncated:
