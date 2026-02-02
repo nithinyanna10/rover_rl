@@ -11,6 +11,7 @@ import pygame
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import yaml
 
 from rover_sim.world import World
@@ -83,6 +84,12 @@ def main() -> None:
         help="Path to trained PPO .zip checkpoint.",
     )
     parser.add_argument(
+        "--vecnormalize-path",
+        type=str,
+        default=None,
+        help="Path to vecnormalize.pkl from training (required if model was trained with VecNormalize).",
+    )
+    parser.add_argument(
         "--render",
         action="store_true",
         help="Show pygame visualization (renders first episode of each map).",
@@ -125,13 +132,23 @@ def main() -> None:
     for map_name in map_names:
         print(f"Evaluating on map '{map_name}'...")
         env = make_eval_env(sim_full_cfg, map_name, seed=seed)
+        if args.vecnormalize_path and os.path.isfile(args.vecnormalize_path):
+            venv = DummyVecEnv([lambda m=map_name: make_eval_env(sim_full_cfg, m, seed=seed)])
+            venv = VecNormalize.load(args.vecnormalize_path, venv)
+            venv.training = False
+            venv.norm_reward = False  # eval rewards unscaled
+            step_env = venv
+            env_for_render = venv.envs[0]
+        else:
+            step_env = None
+            env_for_render = env
 
         # Setup renderer for this map if rendering
         if args.render and renderer is None:
             sim_cfg = sim_full_cfg["sim"]
             render_cfg = sim_full_cfg["render"]
             renderer = PygameRenderer(
-                world=env.world,
+                world=env_for_render.world,
                 window_width=int(render_cfg["window_width"]),
                 window_height=int(render_cfg["window_height"]),
                 show_lidar=bool(render_cfg.get("show_lidar", True)),
@@ -145,8 +162,16 @@ def main() -> None:
         path_lengths: List[float] = []
         ep_rewards: List[float] = []
 
+        use_venv = step_env is not None
         for ep in range(episodes_per_map):
-            obs, _ = env.reset(seed=seed + ep)
+            active = step_env if use_venv else env
+            if use_venv:
+                # SB3 VecEnv.reset() returns only obs; info is in vec_env.reset_infos
+                obs = active.reset()
+                infos = getattr(active, "reset_infos", None) or []
+                obs, info = obs[0], (infos[0] if infos else {})
+            else:
+                obs, info = active.reset(seed=seed + ep)
             done = False
             truncated = False
             ep_reward = 0.0
@@ -156,16 +181,16 @@ def main() -> None:
             
             # Debug: print starting position for first episode
             if ep == 0:
-                start_state = env.rover.get_state()
-                print(f"  Episode {ep+1}: Start at ({start_state.x:.2f}, {start_state.y:.2f}), goal at ({env.world.goal[0]:.2f}, {env.world.goal[1]:.2f})")
+                start_state = env_for_render.rover.get_state()
+                print(f"  Episode {ep+1}: Start at ({start_state.x:.2f}, {start_state.y:.2f}), goal at ({env_for_render.world.goal[0]:.2f}, {env_for_render.world.goal[1]:.2f})")
 
             # Only render first episode of each map
             render_this_episode = args.render and ep == 0
             if render_this_episode and renderer is not None:
-                renderer.world = env.world  # Update world reference
-                state = env.rover.get_state()
+                renderer.world = env_for_render.world  # Update world reference
+                state = env_for_render.rover.get_state()
                 lidar_ranges_init = lidar_sensor.scan(
-                    world=env.world,
+                    world=env_for_render.world,
                     pose=(state.x, state.y, state.yaw),
                     noise_scale=1.0,
                 )
@@ -180,19 +205,26 @@ def main() -> None:
 
             while not (done or truncated):
                 action, _ = model.predict(obs, deterministic=True)
+                if use_venv:
+                    action = np.expand_dims(action, 0)
                 # Debug: print first action for first episode
                 if ep == 0 and step_idx == 0:
-                    print(f"    First action: v={action[0]:.3f}, w={action[1]:.3f}")
-                obs, reward, done, truncated, info = env.step(action)
+                    print(f"    First action: v={float(action.flat[0]):.3f}, w={float(action.flat[1]):.3f}")
+                if use_venv:
+                    step_obs, rewards, dones, infos = active.step(action)
+                    obs, reward, done, info = step_obs[0], float(rewards[0]), bool(dones[0]), infos[0] if infos else {}
+                    truncated = done
+                else:
+                    obs, reward, done, truncated, info = active.step(action)
                 ep_reward += float(reward)
                 step_idx += 1
 
                 # Render if enabled for this episode
                 if render_this_episode and renderer is not None:
                     pygame.event.pump()
-                    state = env.rover.get_state()
+                    state = env_for_render.rover.get_state()
                     lidar_ranges = lidar_sensor.scan(
-                        world=env.world,
+                        world=env_for_render.world,
                         pose=(state.x, state.y, state.yaw),
                         noise_scale=1.0,
                     )
@@ -206,7 +238,7 @@ def main() -> None:
                     )
 
                 # Approximate path length by distance between successive positions
-                state = env.rover.get_state()
+                state = env_for_render.rover.get_state()
                 pos = (state.x, state.y)
                 if last_pos is not None:
                     dx = pos[0] - last_pos[0]
@@ -238,7 +270,10 @@ def main() -> None:
             ep_rewards.append(ep_reward)
             all_episode_rewards.append(ep_reward)
 
-        env.close()
+        if step_env is not None:
+            step_env.close()
+        else:
+            env.close()
 
         results_by_map[map_name] = {
             "successes": successes,
