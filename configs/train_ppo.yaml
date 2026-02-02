@@ -1,5 +1,5 @@
 train:
-  total_timesteps: 5000000   # 5M steps for higher success on hard maps
+  total_timesteps: 5000000   # 5M; VecNormalize + strict map curriculum hurt (17%) — back to simpler setup
   n_envs: 8
   n_steps: 1024
   batch_size: 256
@@ -7,11 +7,11 @@ train:
   gamma: 0.99
   gae_lambda: 0.95
   clip_range: 0.2
-  ent_coef: 0.02
+  ent_coef: 0.025
   vf_coef: 0.5
   max_grad_norm: 0.5
   policy: "MlpPolicy"
-  # Larger policy network for complex navigation (maze, zigzag, s_curve)
+  use_vec_normalize: false   # set true to try obs-only norm (norm_reward=False now; was 17% when norm_reward=True)
   policy_kwargs:
     net_arch:
       - pi: [256, 256]
@@ -22,23 +22,24 @@ env:
   config_path: "configs/sim.yaml"
   curriculum:
     enabled: true
+    # Simpler ramp (no per-phase map lists); this setup gave ~44% before
     phases:
       - name: "sparse_obstacles"
-        max_steps: 300000
+        max_steps: 600000
         random_obstacles_scale: 0.2
-        fixed_map_prob: 0.3
+        fixed_map_prob: 0.15
       - name: "medium_clutter"
-        max_steps: 800000
+        max_steps: 1400000
         random_obstacles_scale: 0.5
-        fixed_map_prob: 0.4
+        fixed_map_prob: 0.35
       - name: "dense_clutter"
-        max_steps: 1200000
+        max_steps: 2400000
         random_obstacles_scale: 0.8
         fixed_map_prob: 0.5
       - name: "full_difficulty"
         max_steps: 5000000
         random_obstacles_scale: 1.0
-        fixed_map_prob: 0.7   # focus on hard maps in final phase
+        fixed_map_prob: 0.6
 
 logging:
   run_root: "runs"
