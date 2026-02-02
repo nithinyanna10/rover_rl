@@ -49,6 +49,8 @@ class RoverEnv(gym.Env):
         fixed_maps_dir: Optional[str] = None,
         fixed_map_names: Optional[List[str]] = None,
         fixed_map_prob: float = 0.0,
+        easy_map_names: Optional[List[str]] = None,
+        min_easy_map_prob: float = 0.0,
     ) -> None:
         super().__init__()
         self.world = world
@@ -58,6 +60,8 @@ class RoverEnv(gym.Env):
         self.curriculum_scale = curriculum_scale
         self.fixed_maps_dir = fixed_maps_dir
         self.fixed_map_names = fixed_map_names or []
+        self.easy_map_names = easy_map_names or []
+        self.min_easy_map_prob = float(max(0.0, min(1.0, min_easy_map_prob)))
         self.fixed_map_prob = fixed_map_prob
 
         self.np_random, _ = gym.utils.seeding.np_random(seed)
@@ -84,9 +88,12 @@ class RoverEnv(gym.Env):
         self._step_count = 0
         self._last_distance_to_goal = 0.0
         self._last_action = np.zeros(2, dtype=np.float32)
+        # Stuck metric: progress over last N steps (for maze/narrow oscillation)
+        self._stuck_window = 20  # ~1 sec at dt=0.05
+        self._distance_history: List[float] = []
 
-        # Observation: lidar + goal vector (2) + (v, w) (2)
-        obs_dim = self.cfg.lidar_num_rays + 4
+        # Observation: lidar + goal_dist(1) + goal_bearing sin/cos(2) + vel(2) + last_action(2) + stuck(1)
+        obs_dim = self.cfg.lidar_num_rays + 8
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
@@ -127,7 +134,11 @@ class RoverEnv(gym.Env):
             and self.rng.random() < self.fixed_map_prob
         )
         if use_fixed_map:
-            map_name = self.rng.choice(self.fixed_map_names)
+            # Mixture curriculum: always keep min_easy_map_prob chance of easy maps
+            if self.easy_map_names and self.rng.random() < self.min_easy_map_prob:
+                map_name = self.rng.choice(self.easy_map_names)
+            else:
+                map_name = self.rng.choice(self.fixed_map_names)
             map_path = os.path.join(self.fixed_maps_dir, f"{map_name}.json")
             if os.path.isfile(map_path):
                 loaded = World.from_map_file(self.world.width, self.world.height, map_path)
@@ -200,6 +211,7 @@ class RoverEnv(gym.Env):
 
         self._last_distance_to_goal = self.world.distance_to_goal(x, y)
         self._last_action = np.zeros(2, dtype=np.float32)
+        self._distance_history = [self._last_distance_to_goal]
 
         obs = self._get_obs()
         info: Dict[str, Any] = {}
@@ -243,7 +255,11 @@ class RoverEnv(gym.Env):
         linear_vel = float(effective_action[0])
         angular_vel = float(effective_action[1])
 
-        # Reward shaping via shared reward module (includes close-turn / close-speed penalties)
+        # Progress over last N steps (for stuck penalty)
+        progress_over_last_N = None
+        if len(self._distance_history) >= self._stuck_window:
+            progress_over_last_N = self._distance_history[0] - distance_to_goal
+
         action_norm = float(np.linalg.norm(effective_action, ord=2))
         jerk_norm = float(np.linalg.norm(effective_action - self._last_action, ord=2))
         reward_components = compute_reward(
@@ -256,10 +272,15 @@ class RoverEnv(gym.Env):
             min_lidar_normalized=min_lidar_norm,
             linear_velocity=linear_vel,
             angular_velocity=angular_vel,
+            progress_over_last_N=progress_over_last_N,
+            lidar_max_range=self.cfg.lidar_max_range,
         )
         progress = reward_components.progress
         self._last_distance_to_goal = distance_to_goal
         self._last_action = effective_action.copy()
+        self._distance_history.append(distance_to_goal)
+        if len(self._distance_history) > self._stuck_window:
+            self._distance_history.pop(0)
 
         reward = reward_components.total()
 
@@ -287,16 +308,36 @@ class RoverEnv(gym.Env):
         lidar_array = np.asarray(lidar_ranges, dtype=np.float32) / self.cfg.lidar_max_range
         lidar_array = np.clip(lidar_array, 0.0, 1.0)
 
-        # Goal vector in rover frame (dx, dy), normalized
+        # Goal: distance (normalized) + bearing sin/cos (invariant, well-scaled for norm)
         dx_body, dy_body = self.rover.goal_relative_vector(self.world.goal)
-        goal_vec = np.array([dx_body, dy_body], dtype=np.float32)
-        goal_norm = np.linalg.norm(goal_vec)
-        if goal_norm > 1e-6:
-            goal_vec /= goal_norm
+        goal_dist = float(np.hypot(dx_body, dy_body))
+        world_diag = float(np.hypot(self.world.width, self.world.height))
+        goal_dist_norm = np.array([np.clip(goal_dist / world_diag, 0.0, 1.0)], dtype=np.float32)
+        bearing = math.atan2(dy_body, dx_body)
+        goal_bearing = np.array([math.sin(bearing), math.cos(bearing)], dtype=np.float32)
 
         vel = np.array([state.v, state.w], dtype=np.float32)
+        # Last action normalized to [-1, 1] (prevents bang-bang; helps maze/narrow)
+        last_v_norm = self._last_action[0] / self.cfg.max_linear_speed
+        last_w_norm = self._last_action[1] / self.cfg.max_angular_speed
+        last_action_norm = np.array([last_v_norm, last_w_norm], dtype=np.float32)
 
-        obs = np.concatenate([lidar_array, goal_vec, vel], axis=0)
+        # Stuck: progress over last N steps (positive = got closer), normalized
+        if len(self._distance_history) >= self._stuck_window:
+            progress_N = self._distance_history[0] - self._distance_history[-1]
+            stuck_val = np.clip(progress_N / self.cfg.lidar_max_range, -1.0, 1.0)
+            stuck_norm = np.array([stuck_val], dtype=np.float32)
+        else:
+            stuck_norm = np.array([0.0], dtype=np.float32)
+
+        obs = np.concatenate([
+            np.ravel(lidar_array),
+            np.ravel(goal_dist_norm),
+            np.ravel(goal_bearing),
+            np.ravel(vel),
+            np.ravel(last_action_norm),
+            np.ravel(stuck_norm),
+        ], axis=0)
         return obs
 
     # ------------------------------------------------------------------
@@ -309,4 +350,8 @@ class RoverEnv(gym.Env):
     def set_fixed_map_prob(self, prob: float) -> None:
         """Set probability of loading a fixed map on reset (for curriculum)."""
         self.fixed_map_prob = float(max(0.0, min(1.0, prob)))
+
+    def set_fixed_map_names(self, names: List[str]) -> None:
+        """Set which fixed maps can be sampled on reset (for difficulty curriculum)."""
+        self.fixed_map_names = list(names) if names else []
 
