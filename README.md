@@ -320,13 +320,6 @@ High-level steps to deploy on a Raspberry Pi rover:
      --config configs/real_robot.yaml \
      --policy exported_policies/ppo_rover.ts
    ```
-
-   This starts:
-
-   - A fixed-rate (10–20 Hz) control loop.
-   - Sensor reads -> policy inference -> safety shield -> motor commands.
-   - Safe shutdown on exceptions or close-range obstacles.
-
 Safety Notes
 ------------
 
